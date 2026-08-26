@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 -   Scope treenode's internal cache keys per model instead of sharing
     them across every treenode model in the app.
+-   `update_tree()` no longer eagerly reloads the whole table into cache
+    after every write; the cache is invalidated and repopulated lazily
+    on the next read instead.
 
 ## [0.25.0](https://github.com/fabiocaccamo/django-treenode/releases/tag/0.25.0) - 2026-08-26
 -   Add `Django 6.1` support.
