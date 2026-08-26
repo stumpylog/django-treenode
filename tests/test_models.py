@@ -9,7 +9,7 @@ from tests.models import (
     CategoryWithStringPk,
     CategoryWithUUIDPk,
 )
-from treenode.cache import clear_cache
+from treenode.cache import _get_cached_collections, clear_cache
 from treenode.utils import join_pks
 
 
@@ -143,8 +143,7 @@ class TreeNodeModelTestCaseBase:
         }
     )
     def test_cache_not_working(self):
-        with self.assertLogs(level="WARNING"):
-            self.__create_cat_tree()
+        self.__create_cat_tree()
         a = self.__get_cat(name="a")
         aa = self.__get_cat(name="aa")
         aaa = self.__get_cat(name="aaa")
@@ -206,6 +205,28 @@ class TreeNodeModelTestCaseBase:
                     obj.get_tree_display(cache=True),
                     obj.get_tree_display(cache=False),
                 )
+
+    def test_update_tree_invalidates_cache_instead_of_eagerly_repopulating(self):
+        self.__create_cat_tree()
+        a = self.__get_cat(name="a")
+
+        # populate the cache once via a normal cache=True read
+        a.get_ancestors()
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertTrue(ls)
+        self.assertTrue(d)
+
+        # a write should invalidate the cache, not eagerly repopulate it
+        a.set_priority(5)
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertFalse(ls)
+        self.assertFalse(d)
+
+        # but the next cache=True read still lazily repopulates and
+        # returns correct data
+        with self.assertNumQueries(1):
+            ancestors = a.get_ancestors()
+        self.assertEqual(ancestors, a.get_ancestors(cache=False))
 
     def test_debug_performance(self):
         settings.DEBUG = True
@@ -1126,7 +1147,7 @@ f
         e = self.__get_cat(name="d")
         d = self.__get_cat(name="e")
         f = self.__get_cat(name="f")
-        with self.assertNumQueries(0):
+        with self.assertNumQueries(1):
             aaaa.get_ancestors()
         with self.assertNumQueries(1):
             clear_cache(self._category_model)

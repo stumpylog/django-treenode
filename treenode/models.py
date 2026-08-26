@@ -9,7 +9,7 @@ from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 
 from treenode import classproperty
-from treenode.cache import clear_cache, query_cache, update_cache
+from treenode.cache import clear_cache, query_cache
 from treenode.debug import debug_performance
 from treenode.exceptions import CacheError, CircularReferenceError
 from treenode.memory import clear_refs, update_refs
@@ -469,11 +469,8 @@ class TreeNodeModel(models.Model):
             # update in-memory instances
             update_refs(cls, objs_data)
 
-            # update cache instances
-            try:
-                update_cache(cls)
-            except CacheError:
-                pass
+            # invalidate cache instances; query_cache() repopulates lazily
+            clear_cache(cls)
 
     # Private methods
 
