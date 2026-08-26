@@ -206,28 +206,6 @@ class TreeNodeModelTestCaseBase:
                     obj.get_tree_display(cache=False),
                 )
 
-    def test_update_tree_invalidates_cache_instead_of_eagerly_repopulating(self):
-        self.__create_cat_tree()
-        a = self.__get_cat(name="a")
-
-        # populate the cache once via a normal cache=True read
-        a.get_ancestors()
-        ls, d = _get_cached_collections(self._category_model)
-        self.assertTrue(ls)
-        self.assertTrue(d)
-
-        # a write should invalidate the cache, not eagerly repopulate it
-        a.set_priority(5)
-        ls, d = _get_cached_collections(self._category_model)
-        self.assertFalse(ls)
-        self.assertFalse(d)
-
-        # but the next cache=True read still lazily repopulates and
-        # returns correct data
-        with self.assertNumQueries(1):
-            ancestors = a.get_ancestors()
-        self.assertEqual(ancestors, a.get_ancestors(cache=False))
-
     def test_debug_performance(self):
         settings.DEBUG = True
         self.__create_cat_tree()
@@ -1388,6 +1366,29 @@ f
         a.save()
         self.assertEqual(a.get_level(), 1)
         self.assertEqual(a.get_depth(), 0)
+
+    def test_update_tree_invalidates_cache_instead_of_eagerly_repopulating(self):
+        self.__create_cat_tree()
+        aaaa = self.__get_cat(name="aaaa")
+
+        # populate the cache once via a normal cache=True read
+        aaaa.get_ancestors()
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertTrue(ls)
+        self.assertTrue(d)
+
+        # a write should invalidate the cache, not eagerly repopulate it
+        aaaa.set_priority(5)
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertFalse(ls)
+        self.assertFalse(d)
+
+        # but the next cache=True read still lazily repopulates and
+        # returns correct (non-empty) data
+        with self.assertNumQueries(1):
+            ancestors = aaaa.get_ancestors()
+        self.assertEqual(ancestors, aaaa.get_ancestors(cache=False))
+        self.assertEqual(len(ancestors), 3)
 
     def test_deep_cat_tree_ordering(self):
         cat_level_list = []
