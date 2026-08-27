@@ -455,14 +455,16 @@ class TreeNodeModel(models.Model):
         )
 
     @classmethod
-    def update_tree(cls):
+    def update_tree(cls, instance=None, created=False, deleted=False):
         debug_message_prefix = (
             f"[treenode] update {cls.__module__}.{cls.__name__} tree: "
         )
 
         with debug_performance(debug_message_prefix):
             # update db
-            objs_data, dirty_instances, dirty_fields = cls.__get_nodes_data()
+            objs_data, dirty_instances, dirty_fields = cls.__get_nodes_data(
+                instance=instance, created=created, deleted=deleted
+            )
 
             with transaction.atomic(using=router.db_for_write(cls)):
                 if dirty_instances:
@@ -547,7 +549,69 @@ class TreeNodeModel(models.Model):
         return obj_dict
 
     @classmethod
-    def __get_nodes_data(cls):  # noqa: C901
+    def __get_scope_pks(cls, instance, created=False, deleted=False):
+        """
+        Returns the set of pks that need reloading and recomputing for
+        this write, or None if the whole table must be recomputed
+        (root-level changes and reparenting aren't scoped yet, since
+        they can affect more than one tree).
+
+        Relies only on data the model already stores: an existing
+        instance's own (pre-write) tn_ancestors_pks already names its
+        root, and a root's own tn_descendants_pks already names every
+        other member of that tree -- no extra field or query beyond one
+        lookup for the parent (on insert) or the root (always) is
+        needed.
+        """
+        parent_pk = instance.tn_parent_id
+        if parent_pk is None:
+            return None  # root-level change: not scoped yet
+
+        stale_ancestors_pks = split_pks(instance.tn_ancestors_pks)
+        old_parent_pk = stale_ancestors_pks[-1] if stale_ancestors_pks else None
+
+        if deleted:
+            root_pk = stale_ancestors_pks[0] if stale_ancestors_pks else None
+            if root_pk is None:
+                return None
+        elif created:
+            parent_row = (
+                cls.objects.filter(pk=parent_pk)
+                .values_list("tn_ancestors_pks", "pk")
+                .first()
+            )
+            if not parent_row:
+                return None
+            parent_ancestors_pks, parent_pk = parent_row
+            parent_ancestors_pks = split_pks(parent_ancestors_pks)
+            root_pk = parent_ancestors_pks[0] if parent_ancestors_pks else parent_pk
+        else:
+            if old_parent_pk != str(parent_pk):
+                return None  # reparented: not scoped yet
+            root_pk = stale_ancestors_pks[0] if stale_ancestors_pks else None
+            if root_pk is None:
+                return None
+
+        root_descendants_pks = (
+            cls.objects.filter(pk=root_pk)
+            .values_list("tn_descendants_pks", flat=True)
+            .first()
+        )
+        if root_descendants_pks is None:
+            return None
+
+        scope_pks = set(split_pks(root_descendants_pks))
+        scope_pks.add(str(root_pk))
+        if not deleted:
+            scope_pks.add(str(instance.pk))
+        return scope_pks
+
+    @classmethod
+    def __get_nodes_data(cls, instance=None, created=False, deleted=False):  # noqa: C901
+        scope_pks = None
+        if instance is not None:
+            scope_pks = cls.__get_scope_pks(instance, created=created, deleted=deleted)
+
         circular_refs = cls.objects.filter(
             Q(pk=F("tn_parent_id"))
             | Q(
@@ -555,10 +619,13 @@ class TreeNodeModel(models.Model):
                 tn_parent_id__isnull=False,
             )
         )
+        objs_qs = cls.objects.select_related("tn_parent")
+        if scope_pks is not None:
+            circular_refs = circular_refs.filter(pk__in=scope_pks)
+            objs_qs = objs_qs.filter(pk__in=scope_pks)
         if circular_refs.exists():
             raise CircularReferenceError()
 
-        objs_qs = cls.objects.select_related("tn_parent")
         objs_list = list(objs_qs)
         objs_dict = {str(obj.pk): obj for obj in objs_list}
         objs_data_dict = {
@@ -576,6 +643,15 @@ class TreeNodeModel(models.Model):
         # index objects by parent pk, and assign each node's position
         # among its direct siblings (tn_index)
         for obj_data in objs_data_list:
+            if scope_pks is not None and obj_data["tn_parent_pk"] is None:
+                # A scoped recompute only loads one tree, so a root's
+                # sibling group here (all OTHER roots) is incomplete.
+                # Root-level structure is untouched by this write (that
+                # case bails to a full recompute in __get_scope_pks), so
+                # leave this root's own index/siblings exactly as they
+                # already are.
+                obj_data["tn_index"] = objs_dict[str(obj_data["pk"])].tn_index
+                continue
             obj_parent_key = str(obj_data["tn_parent_pk"])
             objs_pks_by_parent.setdefault(obj_parent_key, [])
             objs_pks_by_parent[obj_parent_key].append(obj_data["pk"])
@@ -604,12 +680,19 @@ class TreeNodeModel(models.Model):
             obj_data["tn_children_count"] = len(obj_data["tn_children_pks"])
 
             # update siblings
-            siblings_parent_key = str(obj_data["tn_parent_pk"])
-            obj_data["tn_siblings_pks"] = list(
-                objs_pks_by_parent.get(siblings_parent_key, [])
-            )
-            obj_data["tn_siblings_pks"].remove(obj_data["pk"])
-            obj_data["tn_siblings_count"] = len(obj_data["tn_siblings_pks"])
+            if scope_pks is not None and obj_data["tn_parent_pk"] is None:
+                # see the matching guard above: root-level sibling
+                # groups aren't recomputable from a scoped tree alone.
+                existing_obj = objs_dict[str(obj_data["pk"])]
+                obj_data["tn_siblings_pks"] = split_pks(existing_obj.tn_siblings_pks)
+                obj_data["tn_siblings_count"] = existing_obj.tn_siblings_count
+            else:
+                siblings_parent_key = str(obj_data["tn_parent_pk"])
+                obj_data["tn_siblings_pks"] = list(
+                    objs_pks_by_parent.get(siblings_parent_key, [])
+                )
+                obj_data["tn_siblings_pks"].remove(obj_data["pk"])
+                obj_data["tn_siblings_count"] = len(obj_data["tn_siblings_pks"])
 
             # update descendants and depth
             if obj_data["tn_children_count"] > 0:
