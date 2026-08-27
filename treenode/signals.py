@@ -37,17 +37,25 @@ def post_migrate_treenode(sender, **kwargs):
             sender_model.update_tree()
 
 
-def post_save_treenode(sender, instance, **kwargs):
+def post_save_treenode(sender, instance, created, **kwargs):
     if not __is_treenode_model(sender):
         return
     set_ref(sender, instance)
-    sender.update_tree()
+    if kwargs.get("raw"):
+        # loaddata: a parent row's stored ancestor/descendant data may not
+        # be finalized yet (depends on fixture ordering), so trusting it
+        # to compute a scope risks a wrong-but-not-fallback-triggering
+        # result that nothing later corrects. Always recompute the whole
+        # table here instead, same as before scoping existed.
+        sender.update_tree()
+        return
+    sender.update_tree(instance=instance, created=created)
 
 
 def post_delete_treenode(sender, instance, **kwargs):
     if not __is_treenode_model(sender):
         return
-    sender.update_tree()
+    sender.update_tree(instance=instance, deleted=True)
 
 
 def connect_signals():

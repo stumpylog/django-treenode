@@ -165,7 +165,14 @@ class TreeNodeModel(models.Model):
                 children_qs = self.get_children_queryset()
                 children_qs.update(tn_parent=None)
             self.__class__.objects.filter(pk=self.pk).delete()
-        self.update_tree()
+        if cascade:
+            self.update_tree(instance=self, deleted=True)
+        else:
+            # cascade=False re-parents this node's children to root level,
+            # a root-level structural change (potentially minting several
+            # new roots at once); that isn't scoped yet, so always fall
+            # back to a full recompute here.
+            self.update_tree()
 
     @classmethod
     def delete_tree(cls):
