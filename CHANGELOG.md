@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -   `update_tree()` no longer eagerly reloads the whole table into cache
     after every write; the cache is invalidated and repopulated lazily
     on the next read instead.
+-   `update_tree()` now scopes its recompute to just the affected tree for
+    ordinary inserts, updates, and deletes (a node's own stored ancestor
+    data is reused to find its tree — no new field, no migration), instead
+    of reloading and recomputing the entire table on every write. Root-level
+    changes (new/deleted roots, reparenting) and fixture loading still use
+    the previous full-table recompute.
 
 ## [0.25.0](https://github.com/fabiocaccamo/django-treenode/releases/tag/0.25.0) - 2026-08-26
 -   Add `Django 6.1` support.
