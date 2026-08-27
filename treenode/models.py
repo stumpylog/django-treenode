@@ -619,6 +619,9 @@ class TreeNodeModel(models.Model):
         if instance is not None:
             scope_pks = cls.__get_scope_pks(instance, created=created, deleted=deleted)
 
+        def is_unscoped_root(obj_data):
+            return scope_pks is not None and obj_data["tn_parent_pk"] is None
+
         circular_refs = cls.objects.filter(
             Q(pk=F("tn_parent_id"))
             | Q(
@@ -650,7 +653,7 @@ class TreeNodeModel(models.Model):
         # index objects by parent pk, and assign each node's position
         # among its direct siblings (tn_index)
         for obj_data in objs_data_list:
-            if scope_pks is not None and obj_data["tn_parent_pk"] is None:
+            if is_unscoped_root(obj_data):
                 # A scoped recompute only loads one tree, so a root's
                 # sibling group here (all OTHER roots) is incomplete.
                 # Root-level structure is untouched by this write (that
@@ -687,7 +690,7 @@ class TreeNodeModel(models.Model):
             obj_data["tn_children_count"] = len(obj_data["tn_children_pks"])
 
             # update siblings
-            if scope_pks is not None and obj_data["tn_parent_pk"] is None:
+            if is_unscoped_root(obj_data):
                 # see the matching guard above: root-level sibling
                 # groups aren't recomputable from a scoped tree alone.
                 existing_obj = objs_dict[str(obj_data["pk"])]
