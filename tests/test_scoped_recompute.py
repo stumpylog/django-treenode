@@ -22,15 +22,15 @@ class ScopedRecomputeTestCase(TestCase):
             f"{[d.pk for d in dirty_instances]}",
         )
 
-    def _build_forest(self, num_trees=3, nodes_per_tree=5, prefix="tree"):
+    def _build_forest(self, num_trees=3, nodes_per_tree=5):
         roots = []
         with no_signals():
             for t in range(num_trees):
-                root = Category.objects.create(name=f"{prefix}{t:02d}-root")
+                root = Category.objects.create(name=f"tree{t:02d}-root")
                 roots.append(root)
                 for i in range(nodes_per_tree - 1):
                     Category.objects.create(
-                        name=f"{prefix}{t:02d}-node{i:02d}", tn_parent=root
+                        name=f"tree{t:02d}-node{i:02d}", tn_parent=root
                     )
         Category.update_tree()
         return roots
@@ -155,53 +155,18 @@ class ScopedRecomputeTestCase(TestCase):
         Category.objects.create(name="a-new-root")
         self._assert_matches_full_recompute()
 
-    def test_scoped_write_query_count_does_not_grow_with_unrelated_table_size(self):
-        """
-        Regression test: scoped recompute must not issue more queries when
-        unrelated trees are present. Verifies that adding a node to one tree
-        doesn't touch unrelated trees by checking that dirty instances are
-        limited to the affected tree.
-        """
-        # Build initial forest and keep track of its size
-        roots = self._build_forest(num_trees=3, nodes_per_tree=5)
-        target_root = roots[0]
-        target_root.refresh_from_db()
-        # After _build_forest with nodes_per_tree=5, each root has 4 children
-        descendants_before_large_forest = target_root.tn_descendants_count
+    def test_insert_query_count_does_not_grow_with_unrelated_tree_count(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
 
-        # Build a large unrelated forest PROPERLY (with update_tree) so it has
-        # valid tree state. This represents a scenario with lots of valid data
-        # that should not be touched by a scoped write to target_root.
-        unrelated_roots = self._build_forest(
-            num_trees=50, nodes_per_tree=10, prefix="unrelated"
-        )
+        def insert_and_count_queries(num_trees):
+            roots = self._build_forest(num_trees=num_trees, nodes_per_tree=10)
+            with CaptureQueriesContext(connection) as ctx:
+                Category.objects.create(name="probe-leaf", tn_parent=roots[0])
+            Category.objects.all().delete()
+            return len(ctx.captured_queries)
 
-        # Create and save a new leaf attached to target_root
-        # (triggers scoped update_tree via post_save signal)
-        Category.objects.create(name="test-leaf", tn_parent=target_root)
+        small_forest_queries = insert_and_count_queries(num_trees=3)
+        large_forest_queries = insert_and_count_queries(num_trees=30)
 
-        # Refresh target_root to see the updated tree state after the write
-        target_root.refresh_from_db()
-
-        # Verify that the target tree grew by exactly one node
-        descendants_after = target_root.tn_descendants_count
-        self.assertEqual(
-            descendants_after,
-            descendants_before_large_forest + 1,
-            f"Target tree should have grown by one node, but went from "
-            f"{descendants_before_large_forest} to {descendants_after}",
-        )
-
-        # Verify that unrelated roots were NOT affected by the write to target_root
-        for unrelated_root in unrelated_roots:
-            unrelated_root.refresh_from_db()
-            # Descendants count should be exactly 9 (nodes_per_tree - 1)
-            self.assertEqual(
-                unrelated_root.tn_descendants_count,
-                9,
-                f"Unrelated root {unrelated_root.pk} was affected by scoped write: "
-                f"descendants should be 9 but is {unrelated_root.tn_descendants_count}",
-            )
-
-        # Final check: verify the full recompute matches expectations
-        self._assert_matches_full_recompute()
+        self.assertEqual(small_forest_queries, large_forest_queries)
