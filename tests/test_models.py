@@ -9,7 +9,7 @@ from tests.models import (
     CategoryWithStringPk,
     CategoryWithUUIDPk,
 )
-from treenode.cache import clear_cache
+from treenode.cache import _get_cached_collections, clear_cache
 from treenode.utils import join_pks
 
 
@@ -158,8 +158,7 @@ class TreeNodeModelTestCaseBase:
         }
     )
     def test_cache_not_working(self):
-        with self.assertLogs(level="WARNING"):
-            self.__create_cat_tree()
+        self.__create_cat_tree()
         a = self.__get_cat(name="a")
         aa = self.__get_cat(name="aa")
         aaa = self.__get_cat(name="aaa")
@@ -1157,7 +1156,7 @@ f
         e = self.__get_cat(name="d")
         d = self.__get_cat(name="e")
         f = self.__get_cat(name="f")
-        with self.assertNumQueries(0):
+        with self.assertNumQueries(1):
             aaaa.get_ancestors()
         with self.assertNumQueries(1):
             clear_cache(self._category_model)
@@ -1398,6 +1397,29 @@ f
         a.save()
         self.assertEqual(a.get_level(), 1)
         self.assertEqual(a.get_depth(), 0)
+
+    def test_update_tree_invalidates_cache_instead_of_eagerly_repopulating(self):
+        self.__create_cat_tree()
+        aaaa = self.__get_cat(name="aaaa")
+
+        # populate the cache once via a normal cache=True read
+        aaaa.get_ancestors()
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertTrue(ls)
+        self.assertTrue(d)
+
+        # a write should invalidate the cache, not eagerly repopulate it
+        aaaa.set_priority(5)
+        ls, d = _get_cached_collections(self._category_model)
+        self.assertFalse(ls)
+        self.assertFalse(d)
+
+        # but the next cache=True read still lazily repopulates and
+        # returns correct (non-empty) data
+        with self.assertNumQueries(1):
+            ancestors = aaaa.get_ancestors()
+        self.assertEqual(ancestors, aaaa.get_ancestors(cache=False))
+        self.assertEqual(len(ancestors), 3)
 
     def test_deep_cat_tree_ordering(self):
         cat_level_list = []
